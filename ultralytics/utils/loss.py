@@ -390,26 +390,31 @@ class v8ReIDLoss(v8DetectionLoss):
 
     def __init__(self, model):  # model must be de-paralleled
         super().__init__(model)
-        #self.stride = torch.Tensor([8, 16, 32]).cuda() # TODO This should not be hardcoded
         #self.no = self.no + self.nc
+        self.n_ids = model.model[-1].n_ids  # ReID() module
+
+        self.assigner_cls = TaskAlignedAssigner(topk=10, num_classes=1, alpha=0.5, beta=6.0)
+        self.assigner_id = TaskAlignedAssigner(topk=10, num_classes=self.n_ids, alpha=0.5, beta=6.0)
 
     def __call__(self, preds, batch):
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
-        loss = torch.zeros(3, device=self.device)  # box, cls, dfl
+        loss = torch.zeros(4, device=self.device)  # box, cls, dfl
         feats = preds[1] if isinstance(preds, tuple) else preds
-        pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], feats[0].shape[1], -1) for xi in feats], 2).split(
-            (self.reg_max * 4, feats[0].shape[1] - self.reg_max * 4), 1)
+        pred_distri, pred_scores, id_preds = torch.cat([xi.view(feats[0].shape[0], feats[0].shape[1], -1) for xi in feats], 2).split(
+            (self.reg_max * 4, 1, feats[0].shape[1] - self.reg_max * 4 - 1), 1)
 
         pred_scores = pred_scores.permute(0, 2, 1).contiguous()
         pred_distri = pred_distri.permute(0, 2, 1).contiguous()
+        id_preds = id_preds.permute(0, 2, 1).contiguous()
 
         dtype = pred_scores.dtype
         batch_size = pred_scores.shape[0]
         imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
         anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
 
+        # Classification loss (one class) (uses zeros instead of batch['cls'])
         # targets
-        targets = torch.cat((batch['batch_idx'].view(-1, 1), batch['cls'].view(-1, 1), batch['bboxes']), 1)
+        targets = torch.cat((batch['batch_idx'].view(-1, 1), torch.zeros_like(batch['cls'].view(-1, 1)), batch['bboxes']), 1)
         targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
         gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
@@ -417,7 +422,7 @@ class v8ReIDLoss(v8DetectionLoss):
         # pboxes
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
 
-        target_labels, target_bboxes, target_scores, fg_mask, _ = self.assigner(
+        target_labels, target_bboxes, target_scores, fg_mask, _ = self.assigner_cls(
             pred_scores.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
             anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt)
 
@@ -425,15 +430,7 @@ class v8ReIDLoss(v8DetectionLoss):
 
         # cls loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        if feats[0].shape[1] == self.no:
-            print(pred_scores.shape)
-            print(target_scores.to(dtype).shape)
-            print(batch['cls'])
-            print(target_labels.shape)
-            print(target_labels.dtype)
-            loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
-        else:
-            loss[1] = 0 # TODO Do some real validation thing here
+        loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
 
         # bbox loss
         if fg_mask.sum():
@@ -441,9 +438,31 @@ class v8ReIDLoss(v8DetectionLoss):
             loss[0], loss[2] = self.bbox_loss(pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores,
                                               target_scores_sum, fg_mask)
 
+        # ID Loss (basically the same as Classification loss, but with IDs (and no bbox loss)
+        if feats[0].shape[1] == self.no + self.n_ids: # Edge case: will fail when n_ids == emb_size
+            targets = torch.cat((batch['batch_idx'].view(-1, 1), batch['cls'].view(-1, 1), batch['bboxes']), 1)
+            targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
+            gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
+            mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
+
+            # pboxes
+            pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
+
+            target_labels, _, target_scores, _, _ = self.assigner_id(
+                id_preds.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
+            anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt)
+            target_scores_sum = max(target_scores.sum(), 1)
+
+            # TODO Replace with CrossEntropyLoss?
+            loss[3] = self.bce(id_preds, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        else:
+            loss[3] = 0 # TODO Do some real validation thing here
+
+
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
+        loss[3] *= self.hyp.id   # ID  gain
 
         return loss.sum() * batch_size, loss.detach()  # loss(box, cls, dfl)
 

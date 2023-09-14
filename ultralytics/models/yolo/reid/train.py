@@ -43,7 +43,7 @@ class ReIDTrainer(yolo.detect.DetectionTrainer):
 
     def get_validator(self):
         """Returns an instance of the PoseValidator class for validation."""
-        self.loss_names = 'box_loss', 'id_loss', 'dfl_loss'
+        self.loss_names = 'box_loss', 'cls_loss', 'dfl_loss', 'id_loss'
         return yolo.reid.ReIDValidator(self.test_loader, save_dir=self.save_dir, args=copy(self.args))
 
     def plot_training_samples(self, batch, ni):
