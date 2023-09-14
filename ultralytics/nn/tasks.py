@@ -10,10 +10,10 @@ import torch.nn as nn
 from ultralytics.nn.modules import (AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
                                     Classify, Concat, Conv, Conv2, ConvTranspose, Detect, DWConv, DWConvTranspose2d,
                                     Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, Pose, RepC3, RepConv,
-                                    RTDETRDecoder, Segment)
+                                    RTDETRDecoder, Segment, ReID)
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
-from ultralytics.utils.loss import v8ClassificationLoss, v8DetectionLoss, v8PoseLoss, v8SegmentationLoss
+from ultralytics.utils.loss import v8ClassificationLoss, v8DetectionLoss, v8PoseLoss, v8SegmentationLoss, v8ReIDLoss
 from ultralytics.utils.plotting import feature_visualization
 from ultralytics.utils.torch_utils import (fuse_conv_and_bn, fuse_deconv_and_bn, initialize_weights, intersect_dicts,
                                            make_divisible, model_info, scale_img, time_sync)
@@ -236,7 +236,7 @@ class DetectionModel(BaseModel):
 
         # Build strides
         m = self.model[-1]  # Detect()
-        if isinstance(m, (Detect, Segment, Pose)):
+        if isinstance(m, (Detect, Segment, Pose, ReID)):
             s = 256  # 2x min stride
             m.inplace = self.inplace
             forward = lambda x: self.forward(x)[0] if isinstance(m, (Segment, Pose)) else self.forward(x)
@@ -318,6 +318,17 @@ class PoseModel(DetectionModel):
     def init_criterion(self):
         return v8PoseLoss(self)
 
+class ReIDModel(DetectionModel):
+    """YOLOv8 ReID model."""
+
+    def __init__(self, cfg='yolov8n-reid.yaml', ch=3, emb_size=512, nc=None, verbose=True):
+        """Initialize YOLOv8 ReID model."""
+        if not isinstance(cfg, dict):
+            cfg = yaml_model_load(cfg)  # load model YAML
+        super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+
+    def init_criterion(self):
+        return v8ReIDLoss(self)
 
 class ClassificationModel(BaseModel):
     """YOLOv8 classification model."""
@@ -665,7 +676,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
-        elif m in (Detect, Segment, Pose):
+        elif m in (Detect, Segment, Pose, ReID):
             args.append([ch[x] for x in f])
             if m is Segment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
@@ -749,6 +760,9 @@ def guess_model_task(model):
             return 'segment'
         if m == 'pose':
             return 'pose'
+        if m == 'reid':
+            return 'reid'
+
 
     # Guess from model cfg
     if isinstance(model, dict):
@@ -773,6 +787,9 @@ def guess_model_task(model):
                 return 'classify'
             elif isinstance(m, Pose):
                 return 'pose'
+            elif isinstance(m, ReID):
+                return 'reid'
+
 
     # Guess from model filename
     if isinstance(model, (str, Path)):
@@ -783,6 +800,8 @@ def guess_model_task(model):
             return 'classify'
         elif '-pose' in model.stem or 'pose' in model.parts:
             return 'pose'
+        elif '-reid' in model.stem or 'reid' in model.parts:
+            return 'reid'
         elif 'detect' in model.parts:
             return 'detect'
 
