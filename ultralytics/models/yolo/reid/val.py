@@ -5,12 +5,16 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from torcheval.metrics import MulticlassAUPRC
 
 from ultralytics.data import build_dataloader, build_yolo_dataset, converter
 from ultralytics.engine.validator import BaseValidator
 from ultralytics.utils import LOGGER, ops
 from ultralytics.utils.checks import check_requirements
-from ultralytics.utils.metrics import ConfusionMatrix, DetMetrics, box_iou
+from ultralytics.utils.metrics import ConfusionMatrix, ReIDMetrics, box_iou
 from ultralytics.utils.plotting import output_to_target, plot_images
 from ultralytics.utils.torch_utils import de_parallel
 
@@ -36,7 +40,7 @@ class ReIDValidator(BaseValidator):
         self.is_coco = False
         self.class_map = None
         self.args.task = 'detect'
-        self.metrics = DetMetrics(save_dir=self.save_dir, on_plot=self.on_plot)
+        self.metrics = ReIDMetrics(save_dir=self.save_dir, on_plot=self.on_plot)
         self.iouv = torch.linspace(0.5, 0.95, 10)  # iou vector for mAP@0.5:0.95
         self.niou = self.iouv.numel()
         self.lb = []  # for autolabelling
@@ -47,6 +51,8 @@ class ReIDValidator(BaseValidator):
         batch['img'] = (batch['img'].half() if self.args.half else batch['img'].float()) / 255
         for k in ['batch_idx', 'cls', 'bboxes']:
             batch[k] = batch[k].to(self.device)
+        batch['ids'] = batch['cls'][:]
+        batch['cls'] = torch.zeros_like(batch['cls'], device=self.device)
 
         if self.args.save_hybrid:
             height, width = batch['img'].shape[2:]
@@ -72,10 +78,11 @@ class ReIDValidator(BaseValidator):
         self.seen = 0
         self.jdict = []
         self.stats = []
+        self.embs = []
 
     def get_desc(self):
         """Return a formatted string summarizing class metrics of YOLO model."""
-        return ('%22s' + '%11s' * 6) % ('Class', 'Images', 'Instances', 'Box(P', 'R', 'mAP50', 'mAP50-95)')
+        return ('%22s' + '%11s' * 8) % ('Class', 'Images', 'Instances', 'Box(P', 'R', 'mAP50', 'mAP50-95)', 'ReID(R1', 'mAP)')
 
     def postprocess(self, preds):
         """Apply Non-maximum suppression to prediction outputs."""
@@ -83,15 +90,17 @@ class ReIDValidator(BaseValidator):
                                        self.args.conf,
                                        self.args.iou,
                                        labels=self.lb,
-                                       multi_label=True,
-                                       agnostic=self.args.single_cls,
-                                       max_det=self.args.max_det)
+                                       multi_label=False,
+                                       agnostic=True,
+                                       max_det=self.args.max_det,
+                                       nc=1)
 
     def update_metrics(self, preds, batch):
         """Metrics."""
         for si, pred in enumerate(preds):
             idx = batch['batch_idx'] == si
-            cls = batch['cls'][idx]
+            cls = batch['cls'][idx] # NOTE: Class is currently always 0
+            ids = batch['ids'][idx]
             bbox = batch['bboxes'][idx]
             nl, npr = cls.shape[0], pred.shape[0]  # number of labels, predictions
             shape = batch['ori_shape'][si]
@@ -106,8 +115,9 @@ class ReIDValidator(BaseValidator):
                 continue
 
             # Predictions
-            if self.args.single_cls:
-                pred[:, 5] = 0
+            pred[:, 5] = 0
+            embs = pred[:, 6:]
+
             predn = pred.clone()
             ops.scale_boxes(batch['img'][si].shape[1:], predn[:, :4], shape,
                             ratio_pad=batch['ratio_pad'][si])  # native-space pred
@@ -124,8 +134,13 @@ class ReIDValidator(BaseValidator):
                 # TODO: maybe remove these `self.` arguments as they already are member variable
                 if self.args.plots:
                     self.confusion_matrix.process_batch(predn, labelsn)
-            self.stats.append((correct_bboxes, pred[:, 4], pred[:, 5], cls.squeeze(-1)))  # (conf, pcls, tcls)
 
+                # Match bboxes with ground truth
+                matches = torch.argmax(box_iou(predn[:, :4], tbox[:, :4]), dim=0)
+                self.embs.append((embs[matches], ids))
+
+            self.stats.append((correct_bboxes, pred[:, 4], pred[:, 5], cls.squeeze(-1)))  # (conf, pcls, tcls)
+            
             # Save
             if self.args.save_json:
                 self.pred_to_json(predn, batch['im_file'][si])
@@ -144,12 +159,48 @@ class ReIDValidator(BaseValidator):
         if len(stats) and stats[0].any():
             self.metrics.process(*stats)
         self.nt_per_class = np.bincount(stats[-1].astype(int), minlength=self.nc)  # number of targets per class
-        return self.metrics.results_dict
+        met_dict = self.metrics.results_dict
+        r1, mAP = self.get_reid_stats()
+        met_dict['metrics/R1(R)'] = r1
+        met_dict['metrics/mAP(R)'] = mAP
+        return met_dict
 
+    def get_reid_stats(self):
+        embs = torch.cat([x[0] for x in self.embs], dim=0)
+        ids = torch.cat([x[1] for x in self.embs]).squeeze()
+        # Remove unlabeled targets
+        embs = embs[ids != 0]
+        ids = ids[ids != 0]
+
+        _, ids = torch.unique(ids, return_inverse=True)
+        classes = torch.unique(ids)
+
+        query_idx = [(ids == i).nonzero(as_tuple=True)[0][0].item() for i in classes]
+        gallery_idx = [i for i in range(len(ids)) if i not in query_idx]
+        query_emb = embs[query_idx]
+        gallery_emb = embs[gallery_idx]
+        query_ids = ids[query_idx]
+        gallery_ids = ids[gallery_idx]
+
+        dist = torch.matmul(F.normalize(query_emb, dim=1), F.normalize(gallery_emb, dim=1).T)
+        # R1
+        m = torch.argmax(dist, dim=1).cpu()
+        r1 = (torch.sum(gallery_ids[m] == query_ids) / len(query_ids)).item()
+
+        # mAP
+        mean_avg_prec = MulticlassAUPRC(num_classes=len(query_idx))
+        mean_avg_prec.update(dist.T, gallery_ids)
+        m_ap = mean_avg_prec.compute()
+
+        self.r1 = r1
+        self.m_ap = m_ap
+
+        return r1, m_ap
+        
     def print_results(self):
         """Prints training/validation set metrics per class."""
         pf = '%22s' + '%11i' * 2 + '%11.3g' * len(self.metrics.keys)  # print format
-        LOGGER.info(pf % ('all', self.seen, self.nt_per_class.sum(), *self.metrics.mean_results()))
+        LOGGER.info(pf % ('all', self.seen, self.nt_per_class.sum(), *self.metrics.mean_results(), self.r1, self.m_ap))
         if self.nt_per_class.sum() == 0:
             LOGGER.warning(
                 f'WARNING ⚠️ no labels found in {self.args.task} set, can not compute metrics without labels')
@@ -157,7 +208,7 @@ class ReIDValidator(BaseValidator):
         # Print results per class
         if self.args.verbose and not self.training and self.nc > 1 and len(self.stats):
             for i, c in enumerate(self.metrics.ap_class_index):
-                LOGGER.info(pf % (self.names[c], self.seen, self.nt_per_class[c], *self.metrics.class_result(i)))
+                LOGGER.info(pf % (self.names[c], self.seen, self.nt_per_class[c], *self.metrics.class_result(i), self.r1, self.m_ap))
 
         if self.args.plots:
             for normalize in True, False:
