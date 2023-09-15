@@ -395,6 +395,8 @@ class v8ReIDLoss(v8DetectionLoss):
 
         self.assigner_cls = TaskAlignedAssigner(topk=10, num_classes=1, alpha=0.5, beta=6.0)
         self.assigner_id = TaskAlignedAssigner(topk=10, num_classes=self.n_ids, alpha=0.5, beta=6.0)
+        # NOTE: dataloader gets upset if we try to use values out of range as labels, so we instead ignore index 0
+        self.id_loss = nn.CrossEntropyLoss(ignore_index=0, reduction='none', label_smoothing=0.1)
 
     def __call__(self, preds, batch):
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
@@ -454,10 +456,11 @@ class v8ReIDLoss(v8DetectionLoss):
             target_scores_sum = max(target_scores.sum(), 1)
 
             # TODO Replace with CrossEntropyLoss?
-            loss[3] = self.bce(id_preds, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+            #loss[3] = self.bce(id_preds, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+            loss[3] = self.id_loss(id_preds.view(-1, self.n_ids), target_labels.view(-1)).sum() / target_scores_sum  # BCE
+
         else:
             loss[3] = 0 # TODO Do some real validation thing here
-
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
