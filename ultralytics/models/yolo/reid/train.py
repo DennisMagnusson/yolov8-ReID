@@ -2,10 +2,15 @@
 
 from copy import copy
 
+from torch.utils.data import Sampler, BatchSampler
+from random import choice, choices, shuffle
+
+from ultralytics.data import build_dataloader
 from ultralytics.models import yolo
 from ultralytics.nn.tasks import ReIDModel
 from ultralytics.utils import DEFAULT_CFG, LOGGER
 from ultralytics.utils.plotting import plot_images, plot_results
+from ultralytics.utils.torch_utils import torch_distributed_zero_first
 
 
 class ReIDTrainer(yolo.detect.DetectionTrainer):
@@ -29,6 +34,21 @@ class ReIDTrainer(yolo.detect.DetectionTrainer):
         overrides['task'] = 'reid'
         super().__init__(cfg, overrides, _callbacks)
 
+    def get_dataloader(self, dataset_path, batch_size=16, rank=0, mode='train'):
+        assert mode in ['train', 'val']
+        with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
+            dataset = self.build_dataset(dataset_path, mode, batch_size)
+
+        #sampler = IDSampler(dataset) if mode == 'train' else None
+        #batch_sampler = None
+        sampler = None
+        batch_sampler = IDBatchSampler(dataset, batch_size=batch_size) if mode == 'train' else None
+        workers = self.args.workers if mode == 'train' else self.args.workers * 2
+        #return build_dataloader(dataset, batch_size, workers, False, rank, sampler=sampler, batch_sampler=batch_sampler)
+        return build_dataloader(dataset, batch_size, workers, False, rank, sampler=sampler, batch_sampler=batch_sampler)
+
+
+
     def get_model(self, cfg=None, weights=None, verbose=True):
         """Get ReID model with specified configuration and weights."""
         model = ReIDModel(cfg, ch=3, nc=self.data['nc'], verbose=verbose)
@@ -43,7 +63,7 @@ class ReIDTrainer(yolo.detect.DetectionTrainer):
 
     def get_validator(self):
         """Returns an instance of the PoseValidator class for validation."""
-        self.loss_names = 'box_loss', 'cls_loss', 'dfl_loss', 'id_loss'
+        self.loss_names = 'box_loss', 'cls_loss', 'dfl_loss', 'id_loss', 'triplet_loss'
         return yolo.reid.ReIDValidator(self.test_loader, save_dir=self.save_dir, args=copy(self.args))
 
     def plot_training_samples(self, batch, ni):
@@ -64,3 +84,69 @@ class ReIDTrainer(yolo.detect.DetectionTrainer):
     def plot_metrics(self):
         """Plots training/val metrics."""
         plot_results(file=self.csv, pose=False, on_plot=self.on_plot)  # save results.png
+
+# Balanced sampling based on ID
+class IDSampler(Sampler):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+        labels = self.dataset.get_labels()
+        self.id_imgs = {}
+        for i, obj in enumerate(labels):
+            filename = obj['im_file']
+            cl = obj['cls'].squeeze()
+            if cl.size == 0 or cl.ndim == 0:
+                continue
+            for c in cl:
+                if c not in self.id_imgs:
+                    self.id_imgs[c] = []
+                self.id_imgs[c].append(i)
+        self.id_list = list(self.id_imgs.keys())
+
+    def __iter__(self):
+        while True:
+            shuffle(self.id_list)
+            for i in self.id_list:
+                yield choice(self.id_imgs[i])
+
+    def __len__(self):
+        return 8000 # This is basically the validation interval
+
+class IDBatchSampler(Sampler):
+    def __init__(self, dataset, samples_per_id=2, batch_size=16):
+        self.dataset = dataset
+        self.samples_per_id = samples_per_id
+        self.bs = batch_size
+
+        labels = self.dataset.get_labels()
+        self.id_imgs = {}
+        #self.n_negative_samples = n_negative_samples
+        for i, obj in enumerate(labels):
+            filename = obj['im_file']
+            cl = obj['cls'].squeeze()
+            if cl.size == 0 or cl.ndim == 0:
+                continue
+            for c in cl:
+                if c not in self.id_imgs:
+                    self.id_imgs[c] = []
+                self.id_imgs[c].append(i)
+        self.id_list = list([x for x in self.id_imgs.keys() if len(self.id_imgs[x]) > 1])
+
+    def __iter__(self):
+        while True:
+            ids = choices(self.id_list, k=self.bs//self.samples_per_id)
+            idx = []
+            for i in ids:
+                idx += choices(self.id_imgs[i], k=self.samples_per_id)
+            yield idx
+            #ids = sample(self.id_list, n=self.n_negative_samples+1)
+            #pos = choices(self.id_list[ids[0]], k=2)
+            #neg = [choice(self.id_list[x]) for x in ids[1:]]
+            #yield pos + neg
+            #for i in self.id_list:
+            #    yield choice(self.id_imgs[i])
+
+    def __len__(self):
+        return 8000 # This is basically the validation interval
+
+

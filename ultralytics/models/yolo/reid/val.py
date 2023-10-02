@@ -171,11 +171,12 @@ class ReIDValidator(BaseValidator):
         # Remove unlabeled targets
         embs = embs[ids != 0]
         ids = ids[ids != 0]
+        print(embs.shape)
 
         _, ids = torch.unique(ids, return_inverse=True)
         classes = torch.unique(ids)
 
-        query_idx = [(ids == i).nonzero(as_tuple=True)[0][0].item() for i in classes]
+        query_idx = [(ids == i).nonzero(as_tuple=True)[0][0].item() for i in classes if (ids == i).nonzero(as_tuple=True)[0].numel() > 1]
         gallery_idx = [i for i in range(len(ids)) if i not in query_idx]
         query_emb = embs[query_idx]
         gallery_emb = embs[gallery_idx]
@@ -183,6 +184,8 @@ class ReIDValidator(BaseValidator):
         gallery_ids = ids[gallery_idx]
 
         dist = torch.matmul(F.normalize(query_emb, dim=1), F.normalize(gallery_emb, dim=1).T)
+        #dist = torch.cdist(query_emb, gallery_emb)
+
         # R1
         m = torch.argmax(dist, dim=1).cpu()
         r1 = (torch.sum(gallery_ids[m] == query_ids) / len(query_ids)).item()

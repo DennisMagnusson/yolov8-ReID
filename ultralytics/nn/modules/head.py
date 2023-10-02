@@ -160,8 +160,8 @@ class ReID(Detect):
         self.n_ids = nc
         self.emb_size = emb_size
 
-        c4 = max(ch[0] // 4, emb_size)
-        self.emb = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, emb_size, 1), nn.BatchNorm2d(emb_size)) for x in ch)
+        c4 = max(ch[0] // 4, emb_size // 4)
+        self.emb = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), nn.Conv2d(c4, emb_size, 1), nn.BatchNorm2d(emb_size)) for x in ch)
         self.heads = nn.ModuleList(nn.Conv2d(emb_size, self.n_ids, 1) for x in ch)
 
     def forward(self, x):
@@ -177,7 +177,7 @@ class ReID(Detect):
             emb = self.emb[i](x[i])
             embs.append(emb)
             if self.training:
-                x[i] = torch.cat((bboxes[i], self.heads[i](emb)), dim=1)
+                x[i] = torch.cat((bboxes[i], emb, self.heads[i](emb)), dim=1)
             else:
                 x[i] = torch.cat((feats[i], self.heads[i](emb)), dim=1)
         if self.training:
