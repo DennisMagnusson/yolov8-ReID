@@ -12,7 +12,8 @@ from ultralytics.utils import TQDM
 
 
 def coco91_to_coco80_class():
-    """Converts 91-index COCO class IDs to 80-index COCO class IDs.
+    """
+    Converts 91-index COCO class IDs to 80-index COCO class IDs.
 
     Returns:
         (list): A list of 91 class IDs where the index represents the 80-index class ID and the value is the
@@ -46,11 +47,17 @@ def coco80_to_coco91_class():  #
         64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90]
 
 
-def convert_coco(labels_dir='../coco/annotations/', use_segments=False, use_keypoints=False, cls91to80=True):
-    """Converts COCO dataset annotations to a format suitable for training YOLOv5 models.
+def convert_coco(labels_dir='../coco/annotations/',
+                 save_dir='.',
+                 use_segments=False,
+                 use_keypoints=False,
+                 cls91to80=True):
+    """
+    Converts COCO dataset annotations to a format suitable for training YOLOv5 models.
 
     Args:
         labels_dir (str, optional): Path to directory containing COCO dataset annotation files.
+        save_dir (str, optional): Path to directory to save results to.
         use_segments (bool, optional): Whether to include segmentation masks in the output.
         use_keypoints (bool, optional): Whether to include keypoint annotations in the output.
         cls91to80 (bool, optional): Whether to map 91 COCO class IDs to the corresponding 80 COCO class IDs.
@@ -67,7 +74,7 @@ def convert_coco(labels_dir='../coco/annotations/', use_segments=False, use_keyp
     """
 
     # Create dataset directory
-    save_dir = Path('yolo_labels')
+    save_dir = Path(save_dir)
     if save_dir.exists():
         shutil.rmtree(save_dir)  # delete dir
     for p in save_dir / 'labels', save_dir / 'images':
@@ -198,6 +205,7 @@ def convert_dota_to_yolo_obb(dota_root_path: str):
         'helipad': 17}
 
     def convert_label(image_name, image_width, image_height, orig_label_dir, save_dir):
+        """Converts a single image's DOTA annotation to YOLO OBB format and saves it to a specified directory."""
         orig_label_path = orig_label_dir / f'{image_name}.txt'
         save_path = save_dir / f'{image_name}.txt'
 
