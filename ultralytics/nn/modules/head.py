@@ -126,7 +126,7 @@ class Pose(Detect):
         kpt = torch.cat([self.cv4[i](x[i]).view(bs, self.nk, -1) for i in range(self.nl)], -1)  # (bs, 17*3, h*w)
         x = self.detect(self, x)
         if self.training:
-            return x
+            return x, kpt
         pred_kpt = self.kpts_decode(bs, kpt)
         return torch.cat([x, pred_kpt], 1) if self.export else (torch.cat([x[0], pred_kpt], 1), (x[1], kpt))
 
@@ -183,6 +183,49 @@ class ReID(Detect):
 
         emb_cat = torch.cat([emb.view(shape[0], self.emb_size, -1) for emb in embs], 2)
         return torch.cat((bboxes, emb_cat), dim=1), x
+
+class IdPose(Pose):
+    def __init__(self, nc=80, emb_size=512, kpt_shape=(17, 3), ch=()):
+        """Initialize YOLO network with default parameters and Convolutional Layers."""
+        super().__init__(1, ch=ch, kpt_shape=kpt_shape)
+        self.kpt_shape = kpt_shape  # number of keypoints, number of dims (2 for x,y or 3 for x,y,visible)
+        self.pose = Pose.forward
+        self.n_ids = nc
+        self.emb_size = emb_size
+
+        c5 = max(ch[0] // 4, emb_size // 4)
+        self.emb = nn.ModuleList(nn.Sequential(Conv(x, c5, 3), nn.Conv2d(c5, emb_size, 1), nn.BatchNorm2d(emb_size)) for x in ch)
+        self.heads = nn.ModuleList(nn.Conv2d(emb_size, self.n_ids, 1) for x in ch)
+
+    def forward(self, x):
+        """Perform forward pass through YOLO model and return predictions."""
+        shape = x[0].shape  # BCHW
+        bs = x[0].shape[0]  # batch size
+        x_copy = x[:]
+        if self.training:
+            bboxes, kpts = self.pose(self, x_copy) # Bboxes and class
+        else:
+            # NOTE: Bboxes seems to contain keypoints?
+            bboxes, (feats, kpts) = self.pose(self, x_copy) # Bboxes and class
+        embs = []
+        for i in range(self.nl):
+            emb = self.emb[i](x[i])
+            embs.append(emb)
+            if self.training:
+                x[i] = torch.cat((bboxes[i], emb, self.heads[i](emb)), dim=1)
+            else:
+                # TODO This is probably wrong
+                x[i] = torch.cat((feats[i], self.heads[i](emb)), dim=1)
+        if self.training:
+            return x, kpts
+
+        emb_cat = torch.cat([emb.view(shape[0], self.emb_size, -1) for emb in embs], 2)
+        out_feats = [torch.cat((feat, em), 1) for feat, em in zip(feats, embs)] 
+        # Returns same as pose, but with ID at end
+        # NOTE: The ID thing at the end is wrong
+        #return bboxes, (feats, kpts), out_feats#torch.cat((feats, emb_cat), dim=1)
+        return torch.cat((bboxes, emb_cat), dim=1), (feats, kpts), out_feats#torch.cat((feats, emb_cat), dim=1)
+
 
 class Classify(nn.Module):
     """YOLOv8 classification head, i.e. x(b,c1,20,20) to x(b,c2)."""

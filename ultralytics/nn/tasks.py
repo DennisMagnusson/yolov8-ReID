@@ -10,10 +10,10 @@ import torch.nn as nn
 from ultralytics.nn.modules import (AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
                                     Classify, Concat, Conv, Conv2, ConvTranspose, Detect, DWConv, DWConvTranspose2d,
                                     Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, Pose, RepC3, RepConv,
-                                    RTDETRDecoder, Segment, ReID)
+                                    RTDETRDecoder, Segment, ReID, IdPose)
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
-from ultralytics.utils.loss import v8ClassificationLoss, v8DetectionLoss, v8PoseLoss, v8SegmentationLoss, v8ReIDLoss
+from ultralytics.utils.loss import v8ClassificationLoss, v8DetectionLoss, v8PoseLoss, v8SegmentationLoss, v8ReIDLoss, v8IdPoseLoss
 from ultralytics.utils.plotting import feature_visualization
 from ultralytics.utils.torch_utils import (fuse_conv_and_bn, fuse_deconv_and_bn, initialize_weights, intersect_dicts,
                                            make_divisible, model_info, scale_img, time_sync)
@@ -235,7 +235,7 @@ class DetectionModel(BaseModel):
 
         # Build strides
         m = self.model[-1]  # Detect()
-        if isinstance(m, (Detect, Segment, Pose, ReID)):
+        if isinstance(m, (Detect, Segment, Pose, ReID, IdPose)):
             s = 256  # 2x min stride
             m.inplace = self.inplace
             forward = lambda x: self.forward(x)[0] if isinstance(m, (Segment, Pose)) else self.forward(x)
@@ -306,7 +306,6 @@ class SegmentationModel(DetectionModel):
 
 class PoseModel(DetectionModel):
     """YOLOv8 pose model."""
-
     def __init__(self, cfg='yolov8n-pose.yaml', ch=3, nc=None, data_kpt_shape=(None, None), verbose=True):
         """Initialize YOLOv8 Pose model."""
         if not isinstance(cfg, dict):
@@ -331,6 +330,22 @@ class ReIDModel(DetectionModel):
 
     def init_criterion(self):
         return v8ReIDLoss(self)
+
+class IdPoseModel(DetectionModel):
+    """YOLOv8 pose model."""
+
+    def __init__(self, cfg='yolov8n-idpose.yaml', ch=3, emb_size=512, nc=None, data_kpt_shape=(None, None), verbose=True):
+        print(cfg)
+        """Initialize YOLOv8 Pose model."""
+        if not isinstance(cfg, dict):
+            cfg = yaml_model_load(cfg)  # load model YAML
+        if any(data_kpt_shape) and list(data_kpt_shape) != list(cfg['kpt_shape']):
+            LOGGER.info(f"Overriding model.yaml kpt_shape={cfg['kpt_shape']} with kpt_shape={data_kpt_shape}")
+            cfg['kpt_shape'] = data_kpt_shape
+        super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+
+    def init_criterion(self):
+        return v8IdPoseLoss(self)
 
 class ClassificationModel(BaseModel):
     """YOLOv8 classification model."""
@@ -716,7 +731,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
-        elif m in (Detect, Segment, Pose, ReID):
+        elif m in (Detect, Segment, Pose, ReID, IdPose):
             args.append([ch[x] for x in f])
             if m is Segment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
@@ -802,7 +817,8 @@ def guess_model_task(model):
             return 'pose'
         if m == 'reid':
             return 'reid'
-
+        if m == 'idpose':
+            return 'idpose'
 
     # Guess from model cfg
     if isinstance(model, dict):
@@ -829,7 +845,8 @@ def guess_model_task(model):
                 return 'pose'
             elif isinstance(m, ReID):
                 return 'reid'
-
+            elif isinstance(m, IdPose):
+                return 'idpose'
 
     # Guess from model filename
     if isinstance(model, (str, Path)):
@@ -842,6 +859,8 @@ def guess_model_task(model):
             return 'pose'
         elif '-reid' in model.stem or 'reid' in model.parts:
             return 'reid'
+        elif '-idpose' in model.stem or 'idpose' in model.parts:
+            return 'idpose'
         elif 'detect' in model.parts:
             return 'detect'
 

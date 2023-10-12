@@ -2,7 +2,7 @@
 
 from ultralytics.engine.model import Model
 from ultralytics.models import yolo  # noqa
-from ultralytics.nn.tasks import ClassificationModel, DetectionModel, PoseModel, SegmentationModel, ReIDModel
+from ultralytics.nn.tasks import ClassificationModel, DetectionModel, PoseModel, SegmentationModel, ReIDModel, IdPoseModel
 
 
 class YOLO(Model):
@@ -36,4 +36,10 @@ class YOLO(Model):
                 'model': ReIDModel,
                 'trainer': yolo.reid.ReIDTrainer,
                 'validator': yolo.reid.ReIDValidator,
-                'predictor': yolo.reid.ReIDPredictor, } }
+                'predictor': yolo.reid.ReIDPredictor, },
+            'idpose': {
+                'model': IdPoseModel,
+                'trainer': yolo.idpose.IdPoseTrainer,
+                'validator': yolo.idpose.IdPoseValidator,
+                'predictor': yolo.idpose.IdPosePredictor, }
+    }

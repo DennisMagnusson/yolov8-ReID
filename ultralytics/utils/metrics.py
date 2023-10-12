@@ -1018,7 +1018,14 @@ class ReIDMetrics(SimpleClass):
         """Returns dictionary of computed performance metrics and statistics."""
         return dict(zip(self.keys + ['fitness'], self.mean_results() + [self.fitness]))
 
-
+class IdPoseMetrics(PoseMetrics):
+    @property
+    def keys(self):
+        """Returns a list of keys for accessing specific metrics."""
+        return [
+            'metrics/precision(B)', 'metrics/recall(B)', 'metrics/mAP50(B)', 'metrics/mAP50-95(B)',
+            'metrics/precision(P)', 'metrics/recall(P)', 'metrics/mAP50(P)', 'metrics/mAP50-95(P)',
+            'metrics/R1(R)', 'metrics/mAP(R)']
 
 
 class ClassifyMetrics(SimpleClass):

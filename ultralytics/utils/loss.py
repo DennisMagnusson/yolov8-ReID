@@ -454,8 +454,6 @@ class v8PoseLoss(v8DetectionLoss):
                                  pred_kpts):
         """
         Calculate the keypoints loss for the model.
-class v8ReIDLoss(v8DetectionLoss):
-    """Criterion class for computing training losses."""
 
         This function calculates the keypoints loss and keypoints object loss for a given batch. The keypoints loss is
         based on the difference between the predicted keypoints and ground truth keypoints. The keypoints object loss is
@@ -516,6 +514,8 @@ class v8ReIDLoss(v8DetectionLoss):
 
         return kpts_loss, kpts_obj_loss
 
+class v8ReIDLoss(v8DetectionLoss):
+    """Criterion class for computing training losses."""
 
     def __init__(self, model):  # model must be de-paralleled
         super().__init__(model)
@@ -627,6 +627,99 @@ class v8ReIDLoss(v8DetectionLoss):
         loss[4] *= self.hyp.trip # ID triplet  gain
 
         return loss.sum() * batch_size, loss.detach()  # loss(box, cls, dfl)
+
+class v8IdPoseLoss(v8PoseLoss):
+    """Criterion class for computing training losses."""
+
+    def __init__(self, model):  # model must be de-paralleled
+        super().__init__(model)
+        #self.no = self.no + self.nc
+        self.n_ids = model.model[-1].n_ids  # ReID() module
+
+        self.assigner_cls = TaskAlignedAssigner(topk=10, num_classes=1, alpha=0.5, beta=6.0)
+        self.assigner_id = TaskAlignedAssigner(topk=3, num_classes=self.n_ids, alpha=0.5, beta=6.0)
+
+        # NOTE: dataloader gets upset if we try to use values out of range as labels, so we instead ignore index 0
+        self.id_loss = nn.CrossEntropyLoss(ignore_index=0, reduction='none', label_smoothing=0.1)
+
+    def __call__(self, preds, batch):
+        """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
+        loss = torch.zeros(2, device=self.device)  # id, triplet
+
+        training = len(preds) == 2
+        batch['id'] = batch['cls'][:]
+        batch['cls'] = torch.zeros_like(batch['id'])
+        if training:
+            preds_pose = [x[:, :self.reg_max * 4 + 1] for x in preds[0]] # NOTE: +1 for the person class
+            loss_pose, loss_pose_all = super().__call__((preds_pose, preds[1]), batch)
+        else:
+            loss_pose, loss_pose_all = super().__call__((preds[0], preds[1]), batch)
+
+
+        feats = preds[2] if not training else preds[0]
+        #pred_distri, pred_scores, id_preds = torch.cat([xi.view(feats[0].shape[0], feats[0].shape[1], -1) for xi in feats], 2).split((self.reg_max * 4, 1, feats[0].shape[1] - self.reg_max * 4 - 1), 1)
+        if training:
+            pred_distri, pred_scores, emb, id_preds = torch.cat([xi.view(feats[0].shape[0], feats[0].shape[1], -1) for xi in feats], 2).split((self.reg_max * 4, 1, 512, feats[0].shape[1] - 512 - self.reg_max * 4 - 1), 1)
+
+            emb = emb.permute(0, 2, 1).contiguous()
+        else:
+            pred_distri, _, pred_scores, id_preds = torch.cat([xi.view(feats[0].shape[0], feats[0].shape[1], -1) for xi in feats], 2).split((self.reg_max * 4, 51, 1, feats[0].shape[1] - 51 - self.reg_max * 4 - 1), 1)
+        pred_scores = pred_scores.permute(0, 2, 1).contiguous()
+        pred_distri = pred_distri.permute(0, 2, 1).contiguous()
+        id_preds = id_preds.permute(0, 2, 1).contiguous()
+
+        dtype = pred_scores.dtype
+        batch_size = pred_scores.shape[0]
+        imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
+        anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
+
+        # Classification loss (one class) (uses zeros instead of batch['cls'])
+        # targets
+        targets = torch.cat((batch['batch_idx'].view(-1, 1), torch.zeros_like(batch['cls'].view(-1, 1)), batch['bboxes']), 1)
+        targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
+        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
+        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
+
+        # ID Loss (basically the same as Classification loss, but with IDs (and no bbox loss)
+        if training:
+            targets = torch.cat((batch['batch_idx'].view(-1, 1), batch['cls'].view(-1, 1), batch['bboxes']), 1)
+            targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
+            gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
+            mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
+
+            # pboxes
+            pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
+
+            target_labels, _, target_scores, fg_mask, target_gt_idx = self.assigner_id(
+                id_preds.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
+            anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt)
+
+            #embs = F.normalize(emb[fg_mask])
+            embs = emb[fg_mask]
+            labels = target_labels[fg_mask]
+            embs = embs[labels > 0]
+            labels = labels[labels > 0]
+            target_scores_sum = max(target_scores.sum(), 1)
+            for lab in torch.unique(labels):
+                mask = labels == lab
+                query = embs[mask][0].unsqueeze(0)
+                pos = embs[mask][1:]
+                neg = embs[~mask]
+                if pos.numel() == 0 or neg.numel() == 0:
+                    continue
+                pos_dist = torch.cdist(query, pos)
+                neg_dist = torch.cdist(query, neg)
+                loss[1] += F.relu(torch.max(pos_dist) - torch.min(neg_dist) + 0.3)
+
+            loss[1] /= target_scores_sum
+
+            # TODO Replace with CrossEntropyLoss?
+            loss[0] = self.bce(id_preds, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+
+        loss[0] *= self.hyp.id   # ID  gain
+        loss[1] *= self.hyp.trip # ID triplet gain
+
+        return loss.sum() * batch_size + loss_pose, torch.cat((loss_pose_all, loss.detach()))
 
 
 class v8ClassificationLoss:

@@ -21,7 +21,7 @@ from .block import (C1, C2, C3, C3TR, DFL, SPP, SPPF, Bottleneck, BottleneckCSP,
                     HGBlock, HGStem, Proto, RepC3)
 from .conv import (CBAM, ChannelAttention, Concat, Conv, Conv2, ConvTranspose, DWConv, DWConvTranspose2d, Focus,
                    GhostConv, LightConv, RepConv, SpatialAttention)
-from .head import Classify, Detect, Pose, RTDETRDecoder, Segment, ReID
+from .head import Classify, Detect, Pose, RTDETRDecoder, Segment, ReID, IdPose
 from .transformer import (AIFI, MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer, LayerNorm2d,
                           MLPBlock, MSDeformAttn, TransformerBlock, TransformerEncoderLayer, TransformerLayer)
 

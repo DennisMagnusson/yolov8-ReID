@@ -47,8 +47,6 @@ class ReIDTrainer(yolo.detect.DetectionTrainer):
         #return build_dataloader(dataset, batch_size, workers, False, rank, sampler=sampler, batch_sampler=batch_sampler)
         return build_dataloader(dataset, batch_size, workers, False, rank, sampler=sampler, batch_sampler=batch_sampler)
 
-
-
     def get_model(self, cfg=None, weights=None, verbose=True):
         """Get ReID model with specified configuration and weights."""
         model = ReIDModel(cfg, ch=3, nc=self.data['nc'], verbose=verbose)
@@ -112,6 +110,8 @@ class IDSampler(Sampler):
     def __len__(self):
         return 8000 # This is basically the validation interval
 
+# Creates a batch of containing (batch_size/samples_per_id) identities
+# With (at least) samples_per_id samples per identity
 class IDBatchSampler(Sampler):
     def __init__(self, dataset, samples_per_id=2, batch_size=16):
         self.dataset = dataset
@@ -120,7 +120,6 @@ class IDBatchSampler(Sampler):
 
         labels = self.dataset.get_labels()
         self.id_imgs = {}
-        #self.n_negative_samples = n_negative_samples
         for i, obj in enumerate(labels):
             filename = obj['im_file']
             cl = obj['cls'].squeeze()
@@ -139,14 +138,8 @@ class IDBatchSampler(Sampler):
             for i in ids:
                 idx += choices(self.id_imgs[i], k=self.samples_per_id)
             yield idx
-            #ids = sample(self.id_list, n=self.n_negative_samples+1)
-            #pos = choices(self.id_list[ids[0]], k=2)
-            #neg = [choice(self.id_list[x]) for x in ids[1:]]
-            #yield pos + neg
-            #for i in self.id_list:
-            #    yield choice(self.id_imgs[i])
 
     def __len__(self):
-        return 8000 # This is basically the validation interval
+        return 4000 # This is basically the validation interval
 
 
