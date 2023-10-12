@@ -657,7 +657,6 @@ class v8IdPoseLoss(v8PoseLoss):
 
 
         feats = preds[2] if not training else preds[0]
-        #pred_distri, pred_scores, id_preds = torch.cat([xi.view(feats[0].shape[0], feats[0].shape[1], -1) for xi in feats], 2).split((self.reg_max * 4, 1, feats[0].shape[1] - self.reg_max * 4 - 1), 1)
         if training:
             pred_distri, pred_scores, emb, id_preds = torch.cat([xi.view(feats[0].shape[0], feats[0].shape[1], -1) for xi in feats], 2).split((self.reg_max * 4, 1, 512, feats[0].shape[1] - 512 - self.reg_max * 4 - 1), 1)
 
@@ -673,16 +672,9 @@ class v8IdPoseLoss(v8PoseLoss):
         imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
         anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
 
-        # Classification loss (one class) (uses zeros instead of batch['cls'])
-        # targets
-        targets = torch.cat((batch['batch_idx'].view(-1, 1), torch.zeros_like(batch['cls'].view(-1, 1)), batch['bboxes']), 1)
-        targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
-        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
-
         # ID Loss (basically the same as Classification loss, but with IDs (and no bbox loss)
         if training:
-            targets = torch.cat((batch['batch_idx'].view(-1, 1), batch['cls'].view(-1, 1), batch['bboxes']), 1)
+            targets = torch.cat((batch['batch_idx'].view(-1, 1), batch['id'].view(-1, 1), batch['bboxes']), 1)
             targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
             gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
             mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
