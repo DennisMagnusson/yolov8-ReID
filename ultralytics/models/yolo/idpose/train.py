@@ -2,10 +2,15 @@
 
 from copy import copy
 
+from ultralytics.data import build_dataloader
 from ultralytics.models import yolo
 from ultralytics.nn.tasks import IdPoseModel
 from ultralytics.utils import DEFAULT_CFG, LOGGER
 from ultralytics.utils.plotting import plot_images, plot_results
+
+from ultralytics.models.yolo.reid.train import IDBatchSampler
+
+from ultralytics.utils.torch_utils import torch_distributed_zero_first
 
 
 class IdPoseTrainer(yolo.detect.DetectionTrainer):
@@ -32,6 +37,15 @@ class IdPoseTrainer(yolo.detect.DetectionTrainer):
         if isinstance(self.args.device, str) and self.args.device.lower() == 'mps':
             LOGGER.warning("WARNING ⚠️ Apple MPS known Pose bug. Recommend 'device=cpu' for IdPose models. "
                            'See https://github.com/ultralytics/ultralytics/issues/4031.')
+
+    def get_dataloader(self, dataset_path, batch_size=16, rank=0, mode='train'):
+        assert mode in ['train', 'val']
+        with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
+            dataset = self.build_dataset(dataset_path, mode, batch_size)
+        sampler = None
+        batch_sampler = IDBatchSampler(dataset, batch_size=batch_size) if mode == 'train' else None
+        workers = self.args.workers if mode == 'train' else self.args.workers * 2
+        return build_dataloader(dataset, batch_size, workers, False, rank, sampler=sampler, batch_sampler=batch_sampler)
 
     def get_model(self, cfg=None, weights=None, verbose=True):
         """Get pose estimation model with specified configuration and weights."""
