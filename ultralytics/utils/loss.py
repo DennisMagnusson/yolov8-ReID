@@ -587,11 +587,41 @@ class v8ReIDLoss(v8DetectionLoss):
             # pboxes
             pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
 
-            target_labels, _, target_scores, fg_mask, target_gt_idx = self.assigner_id(
-                id_preds.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
-            anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt)
+            _, target_bboxes, _, fg_mask, target_gt_idx = self.assigner_id(
+                    pred_scores.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
+                    anchor_points * stride_tensor, torch.zeros_like(gt_labels), gt_bboxes, mask_gt)
 
+
+            target_labels = gt_labels.long().flatten()[target_gt_idx]
+            id_scores = id_preds[fg_mask]
+            embs = emb[fg_mask]
+            labels = target_labels[fg_mask]
+            # Remove unannotated persons
+            embs = embs[labels > 0]
+            id_scores = id_scores[labels > 0, :]
+            labels = labels[labels > 0]
+            target_scores_sum = max(id_scores.sum(), 1)
+            for lab in torch.unique(labels):
+                mask = labels == lab
+                query = embs[mask][0].unsqueeze(0)
+                pos = embs[mask][1:]
+                neg = embs[~mask]
+                if pos.numel() == 0 or neg.numel() == 0:
+                    continue
+                pos_dist = torch.cdist(query, pos)
+                neg_dist = torch.cdist(query, neg)
+                loss[4] += F.relu(torch.max(pos_dist) - torch.min(neg_dist) + 0.3)
+
+            loss[4] /= target_scores_sum
+            loss[3] = self.id_loss(id_scores, labels).sum() / target_scores_sum  # BCE
+
+            """
             #embs = F.normalize(emb[fg_mask])
+            target_labels, target_bboxes, target_scores, fg_mask, target_gt_idx = self.assigner_id(
+                    pred_scores.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
+                    anchor_points * stride_tensor, torch.zeros_like(gt_labels), gt_bboxes, mask_gt)
+
+            target_labels = gt_labels.long().flatten()[target_gt_idx]
             embs = emb[fg_mask]
             labels = target_labels[fg_mask]
             embs = embs[labels > 0]
@@ -616,9 +646,7 @@ class v8ReIDLoss(v8DetectionLoss):
             loss[3] = self.bce(id_preds, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
 
             #loss[3] = self.id_loss(id_preds.view(-1, self.n_ids), target_labels.view(-1)).sum() / target_scores_sum  # BCE
-
-        else:
-            loss[3] = 0 # TODO Do some real validation thing here
+            """
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
@@ -637,7 +665,8 @@ class v8IdPoseLoss(v8PoseLoss):
         self.n_ids = model.model[-1].n_ids  # ReID() module
 
         self.assigner_cls = TaskAlignedAssigner(topk=10, num_classes=1, alpha=0.5, beta=6.0)
-        self.assigner_id = TaskAlignedAssigner(topk=3, num_classes=self.n_ids, alpha=0.5, beta=6.0)
+        #self.assigner_id = TaskAlignedAssigner(topk=3, num_classes=self.n_ids, alpha=0.5, beta=6.0)
+        self.assigner_id = TaskAlignedAssigner(topk=3, num_classes=1, alpha=0.5, beta=6.0)
 
         # NOTE: dataloader gets upset if we try to use values out of range as labels, so we instead ignore index 0
         self.id_loss = nn.CrossEntropyLoss(ignore_index=0, reduction='none', label_smoothing=0.1)
@@ -682,16 +711,20 @@ class v8IdPoseLoss(v8PoseLoss):
             # pboxes
             pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
 
-            target_labels, _, target_scores, fg_mask, target_gt_idx = self.assigner_id(
-                id_preds.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
-            anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt)
+            _, target_bboxes, _, fg_mask, target_gt_idx = self.assigner_id(
+                    pred_scores.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
+                    anchor_points * stride_tensor, torch.zeros_like(gt_labels), gt_bboxes, mask_gt)
 
-            #embs = F.normalize(emb[fg_mask])
+
+            target_labels = gt_labels.long().flatten()[target_gt_idx]
+            id_scores = id_preds[fg_mask]
             embs = emb[fg_mask]
             labels = target_labels[fg_mask]
+            # Remove unannotated persons
             embs = embs[labels > 0]
+            id_scores = id_scores[labels > 0, :]
             labels = labels[labels > 0]
-            target_scores_sum = max(target_scores.sum(), 1)
+            target_scores_sum = max(id_scores.sum(), 1)
             for lab in torch.unique(labels):
                 mask = labels == lab
                 query = embs[mask][0].unsqueeze(0)
@@ -704,9 +737,9 @@ class v8IdPoseLoss(v8PoseLoss):
                 loss[1] += F.relu(torch.max(pos_dist) - torch.min(neg_dist) + 0.3)
 
             loss[1] /= target_scores_sum
+            loss[0] = self.id_loss(id_scores, labels).sum() / target_scores_sum  # BCE
 
-            # TODO Replace with CrossEntropyLoss?
-            loss[0] = self.bce(id_preds, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+
 
         loss[0] *= self.hyp.id   # ID  gain
         loss[1] *= self.hyp.trip # ID triplet gain
