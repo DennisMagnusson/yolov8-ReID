@@ -125,7 +125,6 @@ def build_dataloader(dataset, batch, workers, shuffle=True, rank=-1, sampler=Non
                                   worker_init_fn=seed_worker,
                                   generator=generator)
 
-
 def check_source(source):
     """Check source type and return corresponding flag values."""
     webcam, screenshot, from_img, in_memory, tensor = False, False, False, False, False

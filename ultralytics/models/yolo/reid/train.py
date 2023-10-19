@@ -118,7 +118,8 @@ class IDBatchSampler(Sampler):
         self.samples_per_id = samples_per_id
         self.bs = batch_size
 
-        labels = self.dataset.get_labels()
+        #labels = self.dataset.get_labels()
+        labels = self.dataset.labels
         self.id_imgs = {}
         for i, obj in enumerate(labels):
             filename = obj['im_file']
