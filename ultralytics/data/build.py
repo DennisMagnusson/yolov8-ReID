@@ -90,24 +90,34 @@ def build_yolo_dataset(cfg, img_path, batch, data, mode='train', rect=False, str
         fraction=cfg.fraction if mode == 'train' else 1.0)
 
 
-def build_dataloader(dataset, batch, workers, shuffle=True, rank=-1):
+def build_dataloader(dataset, batch, workers, shuffle=True, rank=-1, sampler=None, batch_sampler=None):
     """Return an InfiniteDataLoader or DataLoader for training or validation set."""
     batch = min(batch, len(dataset))
     nd = torch.cuda.device_count()  # number of CUDA devices
     nw = min([os.cpu_count() // max(nd, 1), batch if batch > 1 else 0, workers])  # number of workers
-    sampler = None if rank == -1 else distributed.DistributedSampler(dataset, shuffle=shuffle)
+    if sampler is None:
+        sampler = None if rank == -1 else distributed.DistributedSampler(dataset, shuffle=shuffle)
     generator = torch.Generator()
     generator.manual_seed(6148914691236517205 + RANK)
-    return InfiniteDataLoader(dataset=dataset,
-                              batch_size=batch,
-                              shuffle=shuffle and sampler is None,
-                              num_workers=nw,
-                              sampler=sampler,
-                              pin_memory=PIN_MEMORY,
-                              collate_fn=getattr(dataset, 'collate_fn', None),
-                              worker_init_fn=seed_worker,
-                              generator=generator)
-
+    if batch_sampler is not None:
+        return InfiniteDataLoader(dataset=dataset,
+                                  num_workers=nw,
+                                  batch_sampler=batch_sampler,
+                                  pin_memory=PIN_MEMORY,
+                                  collate_fn=getattr(dataset, 'collate_fn', None),
+                                  worker_init_fn=seed_worker,
+                                  generator=generator)
+    else:
+        return InfiniteDataLoader(dataset=dataset,
+                                  batch_size=batch,
+                                  shuffle=shuffle,#shuffle and sampler is None,
+                                  num_workers=nw,
+                                  sampler=sampler,
+                                  batch_sampler=batch_sampler,
+                                  pin_memory=PIN_MEMORY,
+                                  collate_fn=getattr(dataset, 'collate_fn', None),
+                                  worker_init_fn=seed_worker,
+                                  generator=generator)
 
 def check_source(source):
     """Check source type and return corresponding flag values."""
