@@ -165,7 +165,7 @@ class IdPoseValidator(DetectionValidator):
 
                 match_iou = box_iou(predn[:, :4], tbox[:, :4])
                 matches = torch.argmax(match_iou, dim=0)
-                iou_mask = match_iou[matches, torch.arange(len(matches))] > 0.5
+                iou_mask = match_iou[matches, torch.arange(len(matches))] > 0.01
                 self.embs.append((embs[matches][iou_mask], ids[iou_mask]))
 
             # Append correct_masks, correct_boxes, pconf, pcls, tcls
