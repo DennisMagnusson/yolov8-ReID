@@ -718,9 +718,10 @@ class v8IdPoseLoss(v8PoseLoss):
 
             embs = emb[fg_mask]
             labels = target_labels[fg_mask]
+            target_scores_sum = max(target_scores[fg_mask][labels > 0].sum(), 1)
             embs = embs[labels > 0]
             labels = labels[labels > 0]
-            target_scores_sum = max(target_scores.sum(), 1)
+            n = 0
             for lab in torch.unique(labels):
                 mask = labels == lab
                 query = embs[mask][0].unsqueeze(0)
@@ -728,16 +729,22 @@ class v8IdPoseLoss(v8PoseLoss):
                 neg = embs[~mask]
                 if pos.numel() == 0 or neg.numel() == 0:
                     continue
+                # L2
                 pos_dist = torch.cdist(query, pos)
                 neg_dist = torch.cdist(query, neg)
+                # Cosine similarity
+                #pos_dist = 1-torch.matmul(F.normalize(pos, dim=1), F.normalize(query, dim=1).T)
+                #neg_dist = 1-torch.matmul(F.normalize(neg, dim=1), F.normalize(query, dim=1).T)
+                n += 1
                 loss[1] += F.relu(torch.max(pos_dist) - torch.min(neg_dist) + 0.3)
 
-            loss[1] /= target_scores_sum
+            # TODO Remove this?
+            #loss[1] /= target_scores_sum
+            loss[1] /= n
 
             # TODO Replace with CrossEntropyLoss?
-            loss[0] = self.bce(id_preds, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
-
-            #loss[3] = self.id_loss(id_preds.view(-1, self.n_ids), target_labels.view(-1)).sum() / target_scores_sum  # BCE
+            #loss[0] = self.bce(id_preds, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+            loss[0] = self.id_loss(target_scores[fg_mask], target_labels[fg_mask]).sum() / target_scores_sum  # BCE
         loss[0] *= self.hyp.id   # ID  gain
         loss[1] *= self.hyp.trip # ID triplet gain
 
