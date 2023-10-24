@@ -194,7 +194,8 @@ class IdPose(Pose):
         self.emb_size = emb_size
 
         c5 = max(ch[0] // 4, emb_size // 4)
-        self.emb = nn.ModuleList(nn.Sequential(Conv(x, c5, 3), nn.Conv2d(c5, emb_size, 1), nn.BatchNorm2d(emb_size)) for x in ch)
+        self.emb = nn.ModuleList(nn.Sequential(Conv(x, c5, 3), nn.Conv2d(c5, emb_size, 1)) for x in ch)
+        self.bn = nn.BatchNorm2d(emb_size)
         self.heads = nn.ModuleList(nn.Conv2d(emb_size, self.n_ids, 1) for x in ch)
 
     def forward(self, x):
@@ -210,12 +211,10 @@ class IdPose(Pose):
         embs = []
         for i in range(self.nl):
             emb = self.emb[i](x[i])
-            embs.append(emb)
             if self.training:
-                x[i] = torch.cat((bboxes[i], emb, self.heads[i](emb)), dim=1)
+                x[i] = torch.cat((bboxes[i], emb, self.heads[i](self.bn(emb))), dim=1)
             else:
-                # TODO This is probably wrong
-                x[i] = torch.cat((feats[i], self.heads[i](emb)), dim=1)
+                embs.append(self.bn(emb))
         if self.training:
             return x, kpts
 
