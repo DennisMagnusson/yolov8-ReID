@@ -675,7 +675,7 @@ class v8IdPoseLoss(v8PoseLoss):
 
     def __call__(self, preds, batch):
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
-        loss = torch.zeros(2, device=self.device)  # id, triplet
+        loss = torch.zeros(3, device=self.device)  # id, triplet
 
         training = len(preds) == 2
         batch['id'] = batch['cls'][:]
@@ -737,16 +737,18 @@ class v8IdPoseLoss(v8PoseLoss):
                 #neg_dist = 1-torch.matmul(F.normalize(neg, dim=1), F.normalize(query, dim=1).T)
                 n += 1
                 loss[1] += F.relu(torch.max(pos_dist) - torch.min(neg_dist) + 0.3)
+                loss[2] += torch.sum(torch.cdist(embs[mask], torch.mean(embs[mask], dim=0).unsqueeze(0)))
 
             # TODO Remove this?
-            #loss[1] /= target_scores_sum
             loss[1] /= n
+            loss[2] /= n
 
             # TODO Replace with CrossEntropyLoss?
             #loss[0] = self.bce(id_preds, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
             loss[0] = self.id_loss(target_scores[fg_mask], target_labels[fg_mask]).sum() / target_scores_sum  # BCE
         loss[0] *= self.hyp.id   # ID  gain
         loss[1] *= self.hyp.trip # ID triplet gain
+        loss[2] *= self.hyp.cent # ID Center loss gain
 
         return loss.sum() * batch_size + loss_pose, torch.cat((loss_pose_all, loss.detach()))
 
