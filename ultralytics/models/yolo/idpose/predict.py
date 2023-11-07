@@ -44,7 +44,7 @@ class IdPosePredictor(DetectionPredictor):
         for i, pred in enumerate(preds):
             orig_img = orig_imgs[i]
             pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape).round()
-            pred_kpts = pred[:, 6:].view(len(pred), *self.model.kpt_shape) if len(pred) else pred[:, 6:]
+            pred_kpts = pred[:, 6:6+51].view(len(pred), *self.model.kpt_shape) if len(pred) else pred[:, 6:]
             pred_kpts = ops.scale_coords(img.shape[2:], pred_kpts, orig_img.shape)
             img_path = self.batch[0][i]
             results.append(

@@ -133,8 +133,8 @@ class IdPoseValidator(DetectionValidator):
                 if nl:
                     self.stats.append((correct_bboxes, correct_kpts, *torch.zeros(
                         (2, 0), device=self.device), cls.squeeze(-1)))
-                    if self.args.plots:
-                        self.confusion_matrix.process_batch(detections=None, labels=cls.squeeze(-1))
+                    #if self.args.plots:
+                    #    self.confusion_matrix.process_batch(detections=None, labels=cls.squeeze(-1))
                 continue
 
             # Predictions
@@ -160,8 +160,8 @@ class IdPoseValidator(DetectionValidator):
                 labelsn = torch.cat((cls, tbox), 1)  # native-space labels
                 correct_bboxes = self._process_batch(predn[:, :6], labelsn)
                 correct_kpts = self._process_batch(predn[:, :6], labelsn, pred_kpts, tkpts)
-                if self.args.plots:
-                    self.confusion_matrix.process_batch(predn, labelsn)
+                #if self.args.plots:
+                #    self.confusion_matrix.process_batch(predn, labelsn)
 
                 match_iou = box_iou(predn[:, :4], tbox[:, :4])
                 matches = torch.argmax(match_iou, dim=0)
@@ -219,6 +219,7 @@ class IdPoseValidator(DetectionValidator):
     
 
     def plot_val_samples(self, batch, ni):
+        return
         """Plots and saves validation set samples with predicted bounding boxes and keypoints."""
         plot_images(batch['img'],
                     batch['batch_idx'],
@@ -231,6 +232,7 @@ class IdPoseValidator(DetectionValidator):
                     on_plot=self.on_plot)
 
     def plot_predictions(self, batch, preds, ni):
+        return
         """Plots predictions for YOLO model."""
         pred_kpts = torch.cat([p[:, 6:].view(-1, *self.kpt_shape) for p in preds], 0)
         plot_images(batch['img'],
