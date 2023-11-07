@@ -5,6 +5,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.init import constant_, xavier_uniform_
 
 from ultralytics.utils.tal import TORCH_1_10, dist2bbox, make_anchors
@@ -193,24 +194,35 @@ class IdPose(Pose):
         self.n_ids = nc
         self.emb_size = emb_size
 
-        c5 = max(ch[0] // 4, emb_size // 4)
-        self.emb = nn.ModuleList(nn.Sequential(Conv(x, c5, 3), nn.Conv2d(c5, emb_size, 1)) for x in ch)
+        c5 = 256#max(ch[0] // 4, emb_size // 4)
+        self.common = Conv(c5, emb_size, 3)
+        self.emb = nn.ModuleList(nn.Sequential(Conv(x, c5, 3), self.common) for x in ch)
+        #self.emb = nn.ModuleList(nn.Sequential(Conv(x, c5, 3), nn.Conv2d(c5, emb_size, 1)) for x in ch)
         self.bn = nn.BatchNorm2d(emb_size)
-        self.heads = nn.ModuleList(nn.Conv2d(emb_size, self.n_ids, 1) for x in ch)
+        self.head = nn.Conv2d(emb_size, self.n_ids, 1)
+        self.heads = nn.ModuleList(self.head for _ in ch)
+        #self.heads = nn.ModuleList(nn.Conv2d(emb_size, self.n_ids, 1) for x in ch)
+        self.ren = nn.ModuleList(REN(ch=x) for x in ch)
 
     def forward(self, x):
         """Perform forward pass through YOLO model and return predictions."""
         shape = x[0].shape  # BCHW
         bs = x[0].shape[0]  # batch size
-        x_copy = x[:]
+        xd, xr = [], []
+        for i in range(self.nl):
+            d, r = self.ren[i](x[i])
+            xd.append(d)
+            xr.append(r)
+
         if self.training:
-            bboxes, kpts = self.pose(self, x_copy) # Bboxes and class
+            bboxes, kpts = self.pose(self, xd) # Bboxes and class
         else:
             # NOTE: Bboxes seems to contain keypoints?
-            bboxes, (feats, kpts) = self.pose(self, x_copy) # Bboxes and class
+            bboxes, (feats, kpts) = self.pose(self, xd) # Bboxes and class
         embs = []
         for i in range(self.nl):
-            emb = self.emb[i](x[i])
+            #emb = self.emb[i](x[i].detach())
+            emb = self.emb[i](xr[i])
             if self.training:
                 x[i] = torch.cat((bboxes[i], emb, self.heads[i](self.bn(emb))), dim=1)
             else:
@@ -224,6 +236,58 @@ class IdPose(Pose):
         # NOTE: The ID thing at the end is wrong
         #return bboxes, (feats, kpts), out_feats#torch.cat((feats, emb_cat), dim=1)
         return torch.cat((bboxes, emb_cat), dim=1), (feats, kpts), out_feats#torch.cat((feats, emb_cat), dim=1)
+
+# From https://github.com/JudasDie/SOTS/blob/MOT/CSTrack/lib/models/mot/cstrack.py#L179
+class REN(nn.Module):
+    def __init__(self,k_size = 3,ch=()):
+        super(REN, self).__init__()
+        self.w1 = nn.parameter.Parameter(torch.ones(1)*0.5)
+        self.w2 = nn.parameter.Parameter(torch.ones(1)*0.5)
+        w = 6
+        h = 10
+        self.avg_pool = nn.AdaptiveAvgPool2d((w,h))
+
+        self.c_attention1 = nn.Sequential(nn.Conv2d(ch, ch, kernel_size=3, stride=1, padding=1, bias=True),
+                                          nn.InstanceNorm2d(num_features=ch),
+                                          nn.LeakyReLU(0.3, inplace=True))
+        self.c_attention2 = nn.Sequential(nn.Conv2d(ch, ch, kernel_size=3, stride=1, padding=1, bias=True),
+                                          nn.InstanceNorm2d(num_features=ch),
+                                          nn.LeakyReLU(0.3, inplace=True))
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # x: input features with shape [b, c, h, w]
+        b, c, h, w = x.size()
+
+        # feature descriptor on the global spatial information
+        y = self.avg_pool(x)
+
+        y_t1 = self.c_attention1(y)
+        y_t2 = self.c_attention2(y)
+        bs,c,h,w = y_t1.shape
+        y_t1 =y_t1.view(bs, c, h*w)
+        y_t2 =y_t2.view(bs, c, h*w)
+
+        y_t1_T = y_t1.permute(0, 2, 1)
+        y_t2_T = y_t2.permute(0, 2, 1)
+        M_t1 = torch.matmul(y_t1, y_t1_T)
+        M_t2 = torch.matmul(y_t2, y_t2_T)
+        M_t1 = F.softmax(M_t1, dim=-1)
+        M_t2 = F.softmax(M_t2, dim=-1)
+
+        M_s1 = torch.matmul(y_t1, y_t2_T)
+        M_s2 = torch.matmul(y_t2, y_t1_T)
+        M_s1 = F.softmax(M_s1, dim=-1)
+        M_s2 = F.softmax(M_s2, dim=-1)
+
+        x_t1 = x
+        x_t2 = x
+        bs,c,h,w = x_t1.shape
+        x_t1 = x_t1.contiguous().view(bs, c, h*w)
+        x_t2 = x_t2.contiguous().view(bs, c, h*w)
+        x_t1 = torch.matmul(self.w1*M_t1 + (1-self.w1)*M_s1, x_t1).contiguous().view(bs, c, h, w)
+        x_t2 = torch.matmul(self.w2*M_t2 + (1-self.w2)*M_s2, x_t2).contiguous().view(bs, c, h, w)
+        return x_t1+x, x_t2+x
 
 
 class Classify(nn.Module):
