@@ -231,7 +231,7 @@ class IdPose(Pose):
             return x, kpts
 
         emb_cat = torch.cat([emb.view(shape[0], self.emb_size, -1) for emb in embs], 2)
-        out_feats = [torch.cat((feat, em), 1) for feat, em in zip(feats, embs)] 
+        out_feats = [torch.cat((feat, em), 1) for feat, em in zip(feats, embs)]
         # Returns same as pose, but with ID at end
         # NOTE: The ID thing at the end is wrong
         #return bboxes, (feats, kpts), out_feats#torch.cat((feats, emb_cat), dim=1)
@@ -288,6 +288,7 @@ class REN(nn.Module):
         x_t1 = torch.matmul(self.w1*M_t1 + (1-self.w1)*M_s1, x_t1).contiguous().view(bs, c, h, w)
         x_t2 = torch.matmul(self.w2*M_t2 + (1-self.w2)*M_s2, x_t2).contiguous().view(bs, c, h, w)
         return x_t1+x, x_t2+x
+
 
 
 class Classify(nn.Module):

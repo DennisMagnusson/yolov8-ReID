@@ -527,7 +527,7 @@ class v8ReIDLoss(v8DetectionLoss):
         self.assigner_id = TaskAlignedAssigner(topk=3, num_classes=self.n_ids, alpha=0.5, beta=6.0)
 
         # NOTE: dataloader gets upset if we try to use values out of range as labels, so we instead ignore index 0
-        self.id_loss = nn.CrossEntropyLoss(ignore_index=0, reduction='none', label_smoothing=0.1)
+        self.id_loss = nn.CrossEntropyLoss(ignore_index=0, reduction='none', label_smoothing=0.0)
 
     def __call__(self, preds, batch):
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
@@ -737,7 +737,7 @@ class v8IdPoseLoss(v8PoseLoss):
                 #neg_dist = 1-torch.matmul(F.normalize(neg, dim=1), F.normalize(query, dim=1).T)
                 n += 1
                 loss[1] += F.relu(torch.max(pos_dist) - torch.min(neg_dist) + 0.3)
-                loss[2] += torch.sum(torch.cdist(embs[mask], torch.mean(embs[mask], dim=0).unsqueeze(0)))
+                loss[2] += torch.mean(torch.cdist(embs[mask], torch.mean(embs[mask], dim=0).unsqueeze(0)))
 
             # TODO Remove this?
             loss[1] /= n

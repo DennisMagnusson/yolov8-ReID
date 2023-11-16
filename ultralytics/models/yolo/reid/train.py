@@ -141,6 +141,6 @@ class IDBatchSampler(Sampler):
             yield idx
 
     def __len__(self):
-        return 4000 # This is basically the validation interval
+        return 4000*32/self.bs # This is basically the validation interval
 
 
