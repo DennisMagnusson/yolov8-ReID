@@ -8,7 +8,7 @@ from ultralytics.nn.tasks import IdPoseModel
 from ultralytics.utils import DEFAULT_CFG, LOGGER
 from ultralytics.utils.plotting import plot_images, plot_results
 
-from ultralytics.models.yolo.reid.train import IDBatchSampler
+from ultralytics.models.yolo.reid.train import SingleIDBatchSampler
 
 from ultralytics.utils.torch_utils import torch_distributed_zero_first
 
@@ -43,7 +43,7 @@ class IdPoseTrainer(yolo.detect.DetectionTrainer):
         with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
             dataset = self.build_dataset(dataset_path, mode, batch_size)
         sampler = None
-        batch_sampler = IDBatchSampler(dataset, batch_size=batch_size) if mode == 'train' else None
+        batch_sampler = SingleIDBatchSampler(dataset, batch_size=batch_size) if mode == 'train' else None
         workers = self.args.workers if mode == 'train' else self.args.workers * 2
         return build_dataloader(dataset, batch_size, workers, False, rank, sampler=sampler, batch_sampler=batch_sampler)
 

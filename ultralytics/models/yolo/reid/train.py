@@ -3,7 +3,7 @@
 from copy import copy
 
 from torch.utils.data import Sampler, BatchSampler
-from random import choice, choices, shuffle
+from random import choice, choices, shuffle, sample
 
 from ultralytics.data import build_dataloader
 from ultralytics.models import yolo
@@ -141,6 +141,39 @@ class IDBatchSampler(Sampler):
             yield idx
 
     def __len__(self):
-        return 4000*32/self.bs # This is basically the validation interval
+        return int(4000*32/self.bs) # This is basically the validation interval
 
+# Creates a batch of containing samples_per_id images of a single identity
+# The remaining images are sampled randomly
+class SingleIDBatchSampler(Sampler):
+    def __init__(self, dataset, samples_per_id=4, batch_size=16):
+        self.dataset = dataset
+        self.samples_per_id = samples_per_id
+        self.bs = batch_size
+
+        #labels = self.dataset.get_labels()
+        labels = self.dataset.labels
+        self.id_imgs = {}
+        for i, obj in enumerate(labels):
+            filename = obj['im_file']
+            cl = obj['cls'].squeeze()
+            if cl.size == 0 or cl.ndim == 0:
+                continue
+            for c in cl:
+                if c not in self.id_imgs:
+                    self.id_imgs[c] = []
+                self.id_imgs[c].append(i)
+        self.id_list = list([x for x in self.id_imgs.keys() if len(self.id_imgs[x]) > 1])
+        self.n_imgs = len(labels)
+
+    def __iter__(self):
+        while True:
+            pos_id = choices(self.id_list, k=1)[0]
+            idx = []
+            idx += choices(self.id_imgs[pos_id], k=self.samples_per_id)
+            idx += sample(range(0, self.n_imgs), k=self.bs-len(idx))
+            yield idx
+
+    def __len__(self):
+        return int(4000*32/self.bs) # This is basically the validation interval
 

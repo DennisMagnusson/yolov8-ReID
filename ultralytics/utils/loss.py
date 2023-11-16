@@ -719,10 +719,11 @@ class v8IdPoseLoss(v8PoseLoss):
             embs = emb[fg_mask]
             labels = target_labels[fg_mask]
             target_scores_sum = max(target_scores[fg_mask][labels > 0].sum(), 1)
-            embs = embs[labels > 0]
-            labels = labels[labels > 0]
             n = 0
+            # NOTE: There is a very small (but non-zero) chance that a target with id=0 will have the same id as the query
             for lab in torch.unique(labels):
+                if lab == 0: # Don't use unlabeled images as query or positive samples
+                    continue
                 mask = labels == lab
                 query = embs[mask][0].unsqueeze(0)
                 pos = embs[mask][1:]
@@ -739,7 +740,6 @@ class v8IdPoseLoss(v8PoseLoss):
                 loss[1] += F.relu(torch.max(pos_dist) - torch.min(neg_dist) + 0.3)
                 loss[2] += torch.mean(torch.cdist(embs[mask], torch.mean(embs[mask], dim=0).unsqueeze(0)))
 
-            # TODO Remove this?
             loss[1] /= n
             loss[2] /= n
 
